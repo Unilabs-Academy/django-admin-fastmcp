@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3+academy.1] - 2026-10-27
+
+Local, undeployed fork candidate. Harden admin permissions and data exposure,
+add action form inputs and audit handling, preserve full ModelForm validation,
+and harden OAuth replay/resource handling. Add PostgreSQL concurrency tests,
+authenticated HTTP MCP verification and focused adapter regressions.
+
+This fork intentionally rejects unsupported inline writes and several unsafe
+relation query patterns. Existing OAuth grants without the canonical resource
+must be reauthorized. Apply migration 0002 for refresh-replay tracking.
+See [fork review](docs/FORK_REVIEW.md) for scope and adoption gates.
+
 ## [0.1.3] - 2026-09-30
 
 ### Fixed

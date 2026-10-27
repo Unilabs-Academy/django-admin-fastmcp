@@ -1,0 +1,45 @@
+Academy admin MCP fork verification — 2026-10-27
+
+Version: 0.1.3+academy.1
+Branch: feat/academy-admin-adapter
+Upstream baseline: ebd557ac2b799836cb7871744a5f30f7e41dd521
+
+FINAL RESULTS
+- Full suite: 128 passed, 1 third-party Starlette/httpx deprecation warning.
+- Runtime: Python 3.11.17, Django 5.2.17, FastMCP 3.4.6, PostgreSQL 17.
+- Exact command:
+  ACADEMY_SOURCE_DIR=/workspace/academy/aca_django .venv-academy/bin/python -m pytest -q -o addopts='' --ds=tests.project.settings_postgres
+- Four concurrency cases verified real PostgreSQL lock contention.
+- Authenticated HTTP MCP flow verified OAuth login/exchange, authorized reads,
+  denied writes and revocation, without the impersonation test helper.
+- Two optional host-source checks used real method source with isolated fixture
+  models and stubbed external side effects; not a full application integration.
+- Independent final adapter review: 28 regression tests passed; no remaining
+  blocker found in reviewed fixes.
+- Ruff: all checks passed.
+- Django system check: no issues.
+- makemigrations --check --dry-run: no changes detected.
+- Wheel and source distribution: built successfully.
+- Academy pyproject plus fork: dependencies resolved successfully for Python 3.11.
+- Git diff whitespace check: passed.
+- Temporary PostgreSQL test container: stopped and removed.
+
+STATUS
+The implementation is committed locally. GitHub rejected organization fork
+creation with HTTP 403, Resource not accessible by integration. No fork was
+created remotely and no changes were pushed. The Git bundle contains the full
+repository history and the adaptation branch. GitHub Actions configuration is
+included but has not run remotely.
+
+No deployment, production data access, or ChatGPT workspace connection occurred.
+Full staging validation is still required. Inline/nested-inline editing, uploads,
+persistent browser-session workflows and custom JavaScript views remain
+unsupported. Custom/MFA admin-site delegation must be explicitly validated.
+See FORK_REVIEW.md for scope, operation semantics and remaining adoption gates.
+
+RESTORE THE LOCAL FORK
+  git clone -b feat/academy-admin-adapter /workspace/work/django-admin-fastmcp-academy.bundle django-admin-fastmcp
+
+The designated /codex output path was not writable in this execution environment;
+artifacts remain preserved under /workspace/work rather than exposed as download
+links. The wheel is under work/django-admin-fastmcp/dist/.

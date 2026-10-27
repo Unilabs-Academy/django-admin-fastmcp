@@ -9,10 +9,11 @@ from typing import Any
 
 from django.core.exceptions import FieldDoesNotExist
 
-from django_admin_fastmcp import exposure
+from django_admin_fastmcp import conf, exposure
 from django_admin_fastmcp.auth import current_user
-from django_admin_fastmcp.errors import ToolError
-from django_admin_fastmcp.tools import resolve
+from django_admin_fastmcp.errors import ToolError, denied
+from django_admin_fastmcp.serialize import readable_fields, safe_label
+from django_admin_fastmcp.tools import resolve, validate_lookup_path
 
 RESULT_CAP = 20
 
@@ -28,6 +29,8 @@ def autocomplete(model: str, field: str, q: str) -> list[dict[str, Any]]:
     """
     user = current_user()
     model_class, _model_admin, _request = resolve(user, model, "view")
+    if field not in readable_fields(_model_admin, _request):
+        raise denied("field is not exposed")
     try:
         model_field = model_class._meta.get_field(field)
     except FieldDoesNotExist:
@@ -38,5 +41,15 @@ def autocomplete(model: str, field: str, q: str) -> list[dict[str, Any]]:
     related_label = exposure.label_of(model_field.related_model)
     _related_class, related_admin, related_request = resolve(user, related_label, "view")
     queryset = related_admin.get_queryset(related_request)
+    for search_field in related_admin.get_search_fields(related_request):
+        validate_lookup_path(
+            _related_class, search_field.lstrip("^=@"), related_admin, related_request
+        )
+        if _related_class._meta.get_field(search_field.lstrip("^=@").split("__", 1)[0]).is_relation:
+            raise denied("relation search requires a dedicated scoped tool")
     queryset, _ = related_admin.get_search_results(related_request, queryset, q)
-    return [{"pk": str(obj.pk), "label": str(obj)} for obj in queryset[:RESULT_CAP]]
+    return [
+        {"pk": str(obj.pk), "label": safe_label(obj)}
+        for obj in queryset[: conf.get("MAX_SCAN_ROWS")]
+        if related_admin.has_view_permission(related_request, obj)
+    ][:RESULT_CAP]

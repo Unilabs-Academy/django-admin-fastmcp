@@ -21,6 +21,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv-*/
 
 # Type checkers and linters
 .mypy_cache/

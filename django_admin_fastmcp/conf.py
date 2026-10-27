@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from django.conf import settings
+from pydantic import AnyHttpUrl
 
 DEFAULTS: dict[str, Any] = {
     "SERVER_NAME": "django-admin",
@@ -21,6 +22,8 @@ DEFAULTS: dict[str, Any] = {
     "REDACT_FIELDS": ("password", "token", "secret", "api_key", "private_key"),
     "MAX_PAGE_SIZE": 200,
     "MAX_PKS": 1000,
+    "MAX_SCAN_ROWS": 10000,
+    "MAX_ACTION_RESPONSE_BYTES": 1024 * 1024,
     "ACCESS_TOKEN_TTL_MINUTES": 60,
     "REFRESH_TOKEN_TTL_DAYS": 90,
     # Minimum gap between last_used_at writes. 0 (or negative) turns them off, so the MCP server can
@@ -69,3 +72,13 @@ def mcp_path() -> str:
     `checks.py` refuses an MCP_URL with no path at startup.
     """
     return "/" + urlsplit(get("MCP_URL")).path.strip("/")
+
+
+def mcp_resource_url() -> str:
+    """Canonical audience advertised by the served MCP endpoint."""
+    return mcp_origin() + mcp_path()
+
+
+def oauth_issuer() -> str:
+    """Use the same URL normalization as FastMCP's authorization-server metadata."""
+    return str(AnyHttpUrl(get("SITE_URL")))

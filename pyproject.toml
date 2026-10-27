@@ -96,6 +96,8 @@ include = [
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE",
+    "/docs/FORK_REVIEW.md",
+    "/tests",
 ]
 
 [tool.hatch.build.targets.wheel]

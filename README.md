@@ -1,3 +1,8 @@
+> **Local Academy fork candidate — not deployed.** Based on upstream 0.1.3
+> (`ebd557ac2b799836cb7871744a5f30f7e41dd521`). See [fork review and limitations](docs/FORK_REVIEW.md)
+> before using this adapter. The notes below describe upstream behavior; the fork
+> changes permissions, field exposure, actions, form binding and OAuth validation.
+
 # django-admin-fastmcp
 
 A reusable Django app that exposes the Django admin as an MCP server, built on

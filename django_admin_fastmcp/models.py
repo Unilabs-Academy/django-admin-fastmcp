@@ -15,7 +15,7 @@ from datetime import timedelta
 from typing import ClassVar
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 ACCESS_TOKEN_MARKER = "damf"  # noqa: S105 - a wire-format tag, not a secret
@@ -119,8 +119,12 @@ class McpToken(models.Model):
         grant.save()
         return grant, access_wire, refresh_wire
 
+    @transaction.atomic
     def rotate(self) -> tuple[str, str]:
         """Refresh: new access token, and the refresh token rotates too."""
+        McpRefreshTokenUse.objects.create(
+            token=self, prefix=self.refresh_prefix, secret_hash=self.refresh_hash
+        )
         access_wire = self._set_access()
         refresh_wire = self._set_refresh()
         self.save(
@@ -203,3 +207,12 @@ class McpAuthorizationCode(models.Model):
     def find(cls, code: str) -> "McpAuthorizationCode | None":
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         return cls.objects.filter(code_hash=code_hash).select_related("client", "user").first()
+
+
+class McpRefreshTokenUse(models.Model):
+    """Consumed refresh credentials retained to detect reuse and revoke their grant."""
+
+    token = models.ForeignKey(McpToken, on_delete=models.CASCADE, related_name="refresh_uses")
+    prefix = models.CharField(max_length=12, unique=True)
+    secret_hash = models.CharField(max_length=64)
+    consumed_at = models.DateTimeField(auto_now_add=True)

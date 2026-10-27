@@ -118,6 +118,12 @@ def check_settings(app_configs, **kwargs):
             )
         )
 
+    for name in ("MAX_PAGE_SIZE", "MAX_PKS", "MAX_SCAN_ROWS", "MAX_ACTION_RESPONSE_BYTES"):
+        if type(conf.get(name)) is not int or conf.get(name) <= 0:
+            errors.append(
+                Error(f"{name} must be a positive integer", id="django_admin_fastmcp.E008")
+            )
+
     writable = [w.lower() for w in conf.get("WRITABLE_MODELS")]
     for label in PERMISSION_MODELS:
         if label in writable:

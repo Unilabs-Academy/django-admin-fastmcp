@@ -7,8 +7,9 @@ from django.urls import NoReverseMatch, reverse
 
 from django_admin_fastmcp import exposure
 from django_admin_fastmcp.auth import current_user
+from django_admin_fastmcp.errors import ToolError
 from django_admin_fastmcp.request import admin_request
-from django_admin_fastmcp.serialize import concrete_fields
+from django_admin_fastmcp.serialize import concrete_fields, readable_fields
 from django_admin_fastmcp.tools import resolve
 
 
@@ -32,7 +33,11 @@ def list_models() -> list[dict[str, Any]]:
     result = []
     for model, model_admin in exposure.exposed_models():
         request = admin_request(user, model_admin)
-        if not model_admin.has_view_permission(request):
+        if (
+            not exposure.admin_site().has_permission(request)
+            or not model_admin.has_module_permission(request)
+            or not model_admin.has_view_permission(request)
+        ):
             continue
         opts = model._meta
         result.append(
@@ -81,9 +86,7 @@ def describe_model(model: str) -> dict[str, Any]:
     user = current_user()
     model_class, model_admin, request = resolve(user, model, "view")
 
-    field_names = exposure.visible_field_names(
-        model_admin, [f.name for f in concrete_fields(model_class)]
-    )
+    field_names = readable_fields(model_admin, request)
     fields = [_field_info(f) for f in concrete_fields(model_class) if f.name in field_names]
 
     def _names(items) -> list[str]:
@@ -92,6 +95,19 @@ def describe_model(model: str) -> dict[str, Any]:
             for item in items
         ]
 
+    def can_view(related_model):
+        try:
+            resolve(user, exposure.label_of(related_model), "view")
+            return True
+        except ToolError:
+            return False
+
+    for info in fields:
+        if "related_model" in info:
+            related_model = model_class._meta.get_field(info["name"]).related_model
+            if not can_view(related_model):
+                info.pop("related_model")
+
     reverse_relations = sorted(
         f.get_accessor_name()
         for f in model_class._meta.get_fields()
@@ -99,6 +115,7 @@ def describe_model(model: str) -> dict[str, Any]:
         and not f.concrete
         and f.related_model is not None
         and f.get_accessor_name()
+        and can_view(f.related_model)
     )
     actions = {
         name: str(description)
@@ -107,14 +124,31 @@ def describe_model(model: str) -> dict[str, Any]:
     return {
         "model": exposure.label_of(model_class),
         "fields": fields,
-        "list_display": _names(model_admin.get_list_display(request)),
-        "list_filter": _names(model_admin.get_list_filter(request)),
-        "search_fields": list(model_admin.get_search_fields(request)),
-        "ordering": list(model_admin.get_ordering(request) or ()),
-        "readonly_fields": _names(model_admin.get_readonly_fields(request)),
-        "inlines": [
-            exposure.label_of(inline.model) for inline in model_admin.get_inline_instances(request)
+        "list_display": [
+            name for name in _names(model_admin.get_list_display(request)) if name in field_names
         ],
+        "list_filter": [
+            name for name in _names(model_admin.get_list_filter(request)) if name in field_names
+        ],
+        "search_fields": [
+            name
+            for name in model_admin.get_search_fields(request)
+            if name.lstrip("^=@") in field_names
+        ],
+        "ordering": [
+            name
+            for name in (model_admin.get_ordering(request) or ())
+            if name.lstrip("-") in field_names
+        ],
+        "readonly_fields": [
+            name for name in _names(model_admin.get_readonly_fields(request)) if name in field_names
+        ],
+        "inlines": [
+            exposure.label_of(inline.model)
+            for inline in model_admin.get_inline_instances(request)
+            if can_view(inline.model) and inline.has_view_permission(request)
+        ],
+        "inline_editing_supported": False,
         "reverse_relations": reverse_relations,
         "actions": actions,
     }
