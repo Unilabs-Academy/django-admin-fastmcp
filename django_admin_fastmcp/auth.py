@@ -91,8 +91,8 @@ class DjangoAdminTokenVerifier(TokenVerifier):
             return None
         if not (grant.user.is_active and grant.user.is_staff):
             return None
-        expected_resource = conf.get("MCP_URL").rstrip("/")
-        if grant.resource and grant.resource.rstrip("/") != expected_resource:
+        expected_resource = conf.mcp_resource_url()
+        if grant.resource != expected_resource:
             return None
         throttle_minutes = conf.get("LAST_USED_THROTTLE_MINUTES")
         if throttle_minutes > 0 and (
@@ -103,7 +103,7 @@ class DjangoAdminTokenVerifier(TokenVerifier):
             grant.save(update_fields=["last_used_at"])
         return AccessToken(
             token=token,
-            client_id=str(grant.user.pk),
+            client_id=grant.client.client_id,
             scopes=list(grant.scopes),
             expires_at=int(grant.access_expires_at.timestamp()),
             resource=grant.resource or None,
@@ -120,7 +120,7 @@ def build_auth() -> RemoteAuthProvider:
     """
     return RemoteAuthProvider(
         token_verifier=DjangoAdminTokenVerifier(),
-        authorization_servers=[conf.get("SITE_URL")],
+        authorization_servers=[conf.oauth_issuer()],
         base_url=conf.mcp_origin(),
         resource_name=conf.get("SERVER_NAME"),
         scopes_supported=["admin"],

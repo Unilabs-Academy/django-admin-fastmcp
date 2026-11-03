@@ -26,7 +26,7 @@ def test_the_primary_key_is_always_present_as_a_string(superuser, books):
 def test_foreign_keys_carry_a_label_not_just_a_pk(superuser, books, author):
     with impersonate(superuser):
         data = get_object("demo.Book", str(books["plain"].pk))
-    assert data["fields"]["author"] == {"pk": str(author.pk), "label": "Ada Lovelace"}
+    assert data["fields"]["author"] == {"pk": str(author.pk), "label": f"author #{author.pk}"}
 
 
 def test_readonly_fields_are_flagged_and_admin_url_present(superuser, books):

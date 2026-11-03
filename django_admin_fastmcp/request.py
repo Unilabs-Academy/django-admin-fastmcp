@@ -30,7 +30,7 @@ class MessageSink:
         return iter(self.collected)
 
 
-def admin_request(user, model_admin=None, method: str = "GET") -> HttpRequest:
+def admin_request(user, model_admin=None, method: str = "GET", data=None) -> HttpRequest:
     try:
         if model_admin is not None:
             opts = model_admin.model._meta
@@ -43,9 +43,24 @@ def admin_request(user, model_admin=None, method: str = "GET") -> HttpRequest:
     request = HttpRequest()
     request.method = method
     request.path = request.path_info = path
-    request.META = {"SERVER_NAME": "mcp", "SERVER_PORT": "0", "REMOTE_ADDR": "127.0.0.1"}
+    from urllib.parse import urlsplit
+
+    from django_admin_fastmcp import conf
+
+    origin = urlsplit(conf.get("SITE_URL"))
+    request.META = {
+        "SERVER_NAME": origin.hostname or "localhost",
+        "SERVER_PORT": str(origin.port or (443 if origin.scheme == "https" else 80)),
+        "HTTP_HOST": origin.netloc,
+    }
+    request._get_scheme = lambda: origin.scheme
     request.GET = QueryDict("", mutable=False)
-    request.POST = QueryDict("", mutable=False)
+    post = QueryDict("", mutable=True)
+    for key, value in (data or {}).items():
+        values = value if isinstance(value, list) else [value]
+        post.setlist(key, ["" if v is None else str(v) for v in values])
+    post._mutable = False
+    request.POST = post
     request.COOKIES = {}
     request.user = user
     request.session = SessionStore()

@@ -10,9 +10,10 @@ revokes the grant it minted.
 import base64
 import hashlib
 import json
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.contrib.auth.views import redirect_to_login
+from django.db import transaction
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -27,10 +28,12 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from django_admin_fastmcp import conf, exposure
 from django_admin_fastmcp.models import (
     SCOPE_ADMIN,
     McpAuthorizationCode,
     McpClient,
+    McpRefreshTokenUse,
     McpToken,
     constant_time_compare,
     hash_secret,
@@ -45,15 +48,28 @@ LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]", "::1")
 
 
 def _valid_redirect_uri(uri: str) -> bool:
-    parts = urlsplit(uri)
+    if len(uri) > 500:
+        return False
+    try:
+        parts = urlsplit(uri)
+        if parts.fragment or parts.username or parts.password:
+            return False
+        _ = parts.port
+    except ValueError:
+        return False
     if parts.scheme == "https":
-        return bool(parts.netloc)
+        return bool(parts.hostname)
     if parts.scheme == "http":
         return parts.hostname in LOOPBACK_HOSTS
     return False
 
 
 def _pkce_matches(challenge: str, verifier: str) -> bool:
+    if not 43 <= len(verifier) <= 128 or any(
+        c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+        for c in verifier
+    ):
+        return False
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return constant_time_compare(challenge, expected)
@@ -72,7 +88,19 @@ def _staff_or_login(request: HttpRequest) -> HttpResponse | None:
         return redirect_to_login(request.get_full_path(), login_url=reverse("admin:login"))
     if not (request.user.is_active and request.user.is_staff):
         return HttpResponseForbidden("A staff account is required to authorize MCP clients.")
+    if not exposure.admin_site().has_permission(request):
+        return HttpResponseForbidden("Admin site authorization is required to connect MCP clients.")
     return None
+
+
+def _redirect(uri: str, query: dict[str, str]) -> HttpResponseRedirect:
+    parts = urlsplit(uri)
+    params = parse_qsl(parts.query, keep_blank_values=True) + list(query.items())
+    return HttpResponseRedirect(urlunsplit(parts._replace(query=urlencode(params))))
+
+
+def _valid_resource(resource: str) -> bool:
+    return resource == conf.mcp_resource_url()
 
 
 # -- endpoints --------------------------------------------------------------
@@ -81,8 +109,11 @@ def _staff_or_login(request: HttpRequest) -> HttpResponse | None:
 @require_http_methods(["GET"])
 def metadata(request: HttpRequest) -> JsonResponse:
     """Authorization server metadata (RFC 8414)."""
-    issuer = request.build_absolute_uri("/").rstrip("/")
-    absolute = request.build_absolute_uri
+    issuer = conf.oauth_issuer()
+
+    def absolute(path):
+        return issuer.rstrip("/") + path
+
     return JsonResponse(
         {
             "issuer": issuer,
@@ -105,9 +136,11 @@ def register(request: HttpRequest) -> JsonResponse:
     """Dynamic client registration (RFC 7591). Public clients only, PKCE."""
     try:
         payload = json.loads(request.body or b"{}")
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return _token_error("invalid_client_metadata", "request body is not JSON")
 
+    if not isinstance(payload, dict):
+        return _token_error("invalid_client_metadata", "request body must be an object")
     redirect_uris = payload.get("redirect_uris") or []
     if not isinstance(redirect_uris, list) or not redirect_uris:
         return _token_error("invalid_redirect_uri", "redirect_uris is required")
@@ -162,7 +195,7 @@ def authorize(request: HttpRequest) -> HttpResponse:
         query = {"error": error}
         if state:
             query["state"] = state
-        return HttpResponseRedirect(f"{redirect_uri}?{urlencode(query)}")
+        return _redirect(redirect_uri, query)
 
     if params.get("response_type") != "code":
         return _redirect_error("unsupported_response_type")
@@ -173,6 +206,8 @@ def authorize(request: HttpRequest) -> HttpResponse:
     # Requested scopes are ignored on purpose: there is only one, and what a
     # grant may do is decided by the user's admin permissions, not by scopes.
     resource = params.get("resource", "")
+    if len(params.getlist("resource")) != 1 or not _valid_resource(resource):
+        return _redirect_error("invalid_target")
 
     if request.method == "GET":
         return render(
@@ -207,7 +242,7 @@ def authorize(request: HttpRequest) -> HttpResponse:
     query = {"code": code}
     if state:
         query["state"] = state
-    return HttpResponseRedirect(f"{redirect_uri}?{urlencode(query)}")
+    return _redirect(redirect_uri, query)
 
 
 @csrf_exempt
@@ -222,15 +257,12 @@ def token(request: HttpRequest) -> JsonResponse:
     return _token_error("unsupported_grant_type", grant_type or "missing grant_type")
 
 
+@transaction.atomic
 def _exchange_code(request: HttpRequest) -> JsonResponse:
-    code = McpAuthorizationCode.find(request.POST.get("code", ""))
+    code_hash = hashlib.sha256(request.POST.get("code", "").encode()).hexdigest()
+    code = McpAuthorizationCode.objects.select_for_update().filter(code_hash=code_hash).first()
     if code is None:
         return _token_error("invalid_grant", "unknown code")
-    if code.used_at is not None:
-        # A replayed code revokes the grant it minted.
-        if code.token is not None:
-            code.token.revoke()
-        return _token_error("invalid_grant", "code already used")
     if code.expires_at < timezone.now():
         return _token_error("invalid_grant", "code expired")
     if request.POST.get("client_id", "") != code.client.client_id:
@@ -240,6 +272,19 @@ def _exchange_code(request: HttpRequest) -> JsonResponse:
     verifier = request.POST.get("code_verifier", "")
     if not verifier or not _pkce_matches(code.code_challenge, verifier):
         return _token_error("invalid_grant", "PKCE verification failed")
+
+    if not (code.user.is_active and code.user.is_staff):
+        return _token_error("invalid_grant", "user is no longer staff")
+    if (
+        not _valid_resource(code.resource)
+        or request.POST.get("resource") != code.resource
+        or len(request.POST.getlist("resource")) != 1
+    ):
+        return _token_error("invalid_target", "resource mismatch")
+    if code.used_at is not None:
+        if code.token_id is not None:
+            McpToken.objects.select_for_update().get(pk=code.token_id).revoke()
+        return _token_error("invalid_grant", "code already used")
 
     grant, access_wire, refresh_wire = McpToken.issue(
         user=code.user,
@@ -253,23 +298,38 @@ def _exchange_code(request: HttpRequest) -> JsonResponse:
     return _token_response(grant, access_wire, refresh_wire)
 
 
+@transaction.atomic
 def _exchange_refresh(request: HttpRequest) -> JsonResponse:
     wire = request.POST.get("refresh_token", "")
     parts = split_wire_token(wire)
     if parts is None or parts[0] != "damfr":
         return _token_error("invalid_grant", "malformed refresh token")
     _, prefix, secret = parts
-    grant = McpToken.objects.filter(refresh_prefix=prefix).select_related("user").first()
+    grant = McpToken.objects.select_for_update().filter(refresh_prefix=prefix).first()
+    consumed = None
     if grant is None:
-        return _token_error("invalid_grant", "unknown refresh token")
-    if not constant_time_compare(hash_secret(secret, grant.salt), grant.refresh_hash):
+        consumed = McpRefreshTokenUse.objects.filter(prefix=prefix).first()
+        if consumed is None:
+            return _token_error("invalid_grant", "unknown refresh token")
+        grant = McpToken.objects.select_for_update().get(pk=consumed.token_id)
+    expected_hash = consumed.secret_hash if consumed else grant.refresh_hash
+    if not constant_time_compare(hash_secret(secret, grant.salt), expected_hash):
         return _token_error("invalid_grant", "refresh token verification failed")
+    if request.POST.get("client_id", "") != grant.client.client_id:
+        return _token_error("invalid_grant", "client_id mismatch")
+    if (
+        not _valid_resource(grant.resource)
+        or request.POST.get("resource") != grant.resource
+        or len(request.POST.getlist("resource")) != 1
+    ):
+        return _token_error("invalid_target", "resource mismatch")
+    if consumed is not None:
+        grant.revoke()
+        return _token_error("invalid_grant", "refresh token reuse revoked the grant")
     if grant.is_revoked or grant.refresh_expires_at < timezone.now():
         return _token_error("invalid_grant", "refresh token expired or revoked")
     if not (grant.user.is_active and grant.user.is_staff):
         return _token_error("invalid_grant", "user is no longer staff")
-    if request.POST.get("client_id", "") != grant.client.client_id:
-        return _token_error("invalid_grant", "client_id mismatch")
 
     access_wire, refresh_wire = grant.rotate()
     return _token_response(grant, access_wire, refresh_wire)
@@ -277,7 +337,7 @@ def _exchange_refresh(request: HttpRequest) -> JsonResponse:
 
 def _token_response(grant: McpToken, access_wire: str, refresh_wire: str) -> JsonResponse:
     expires_in = int((grant.access_expires_at - timezone.now()).total_seconds())
-    return JsonResponse(
+    response = JsonResponse(
         {
             "access_token": access_wire,
             "token_type": "Bearer",
@@ -286,19 +346,28 @@ def _token_response(grant: McpToken, access_wire: str, refresh_wire: str) -> Jso
             "scope": " ".join(grant.scopes),
         }
     )
+    response["Cache-Control"] = "no-store"
+    response["Pragma"] = "no-cache"
+    return response
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@transaction.atomic
 def revoke(request: HttpRequest) -> HttpResponse:
     """Token revocation (RFC 7009). Always 200, so callers cannot probe."""
     parts = split_wire_token(request.POST.get("token", ""))
     if parts is not None:
         marker, prefix, secret = parts
         field = "access" if marker == "damf" else "refresh"
-        grant = McpToken.objects.filter(**{f"{field}_prefix": prefix}).first()
-        if grant is not None and constant_time_compare(
-            hash_secret(secret, grant.salt), getattr(grant, f"{field}_hash")
-        ):
-            grant.revoke()
+        grant = McpToken.objects.select_for_update().filter(**{f"{field}_prefix": prefix}).first()
+        consumed = None
+        if grant is None and field == "refresh":
+            consumed = McpRefreshTokenUse.objects.filter(prefix=prefix).first()
+            if consumed is not None:
+                grant = McpToken.objects.select_for_update().filter(pk=consumed.token_id).first()
+        if grant is not None:
+            expected_hash = consumed.secret_hash if consumed else getattr(grant, f"{field}_hash")
+            if constant_time_compare(hash_secret(secret, grant.salt), expected_hash):
+                grant.revoke()
     return HttpResponse(status=200)

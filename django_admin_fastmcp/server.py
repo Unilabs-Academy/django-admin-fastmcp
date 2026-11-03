@@ -58,7 +58,22 @@ def build_server(*, with_auth: bool = True) -> FastMCP:
     disabled = set(conf.get("DISABLED_TOOLS"))
     for name, fn in all_tools().items():
         if name not in disabled:
-            server.tool(with_fresh_connections(instrument(name, fn)), name=f"{NAMESPACE}_{name}")
+            read_only = name not in {
+                "create_object",
+                "update_object",
+                "delete_object",
+                "run_action",
+            }
+            server.tool(
+                with_fresh_connections(instrument(name, fn)),
+                name=f"{NAMESPACE}_{name}",
+                annotations={
+                    "readOnlyHint": read_only,
+                    "destructiveHint": not read_only,
+                    "idempotentHint": read_only,
+                    "openWorldHint": not read_only,
+                },
+            )
     return server
 
 
@@ -69,22 +84,30 @@ class BodySizeLimit:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            headers = dict(scope.get("headers") or [])
-            length = headers.get(b"content-length")
-            if length is not None and int(length) > MAX_BODY_BYTES:
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 413,
-                        "headers": [(b"content-type", b"text/plain")],
-                    }
-                )
-                await send(
-                    {
-                        "type": "http.response.body",
-                        "body": b"request body over 256 KiB",
-                    }
-                )
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        chunks = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
                 return
-        await self.app(scope, receive, send)
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > MAX_BODY_BYTES:
+                await send({"type": "http.response.start", "status": 413, "headers": []})
+                await send({"type": "http.response.body", "body": b"request body too large"})
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        delivered = False
+
+        async def bounded_receive():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+            return await receive()
+
+        await self.app(scope, bounded_receive, send)

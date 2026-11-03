@@ -11,6 +11,7 @@ from django.contrib.auth.models import User
 from django.urls import reverse
 from django.utils import timezone
 
+from django_admin_fastmcp import conf
 from django_admin_fastmcp.auth import DjangoAdminTokenVerifier, impersonate
 from django_admin_fastmcp.errors import ToolError
 from django_admin_fastmcp.models import McpClient, McpToken
@@ -40,6 +41,7 @@ def authorize(client, client_id, challenge, scope="admin:read admin:write"):
     """GET the consent page, then approve. Returns the redirect URL."""
     params = {
         "response_type": "code",
+        "resource": conf.mcp_resource_url(),
         "client_id": client_id,
         "redirect_uri": REDIRECT_URI,
         "scope": scope,
@@ -61,6 +63,7 @@ def exchange(client, client_id, code, code_verifier):
         reverse("django_admin_fastmcp:token"),
         {
             "grant_type": "authorization_code",
+            "resource": conf.mcp_resource_url(),
             "code": code,
             "client_id": client_id,
             "redirect_uri": REDIRECT_URI,
@@ -125,6 +128,7 @@ def test_anonymous_browser_is_sent_to_the_admin_login(client, db):
         reverse("django_admin_fastmcp:authorize"),
         {
             "response_type": "code",
+            "resource": conf.mcp_resource_url(),
             "client_id": client_id,
             "redirect_uri": REDIRECT_URI,
             "code_challenge": challenge,
@@ -144,6 +148,7 @@ def test_non_staff_user_is_refused(client, db):
         reverse("django_admin_fastmcp:authorize"),
         {
             "response_type": "code",
+            "resource": conf.mcp_resource_url(),
             "client_id": client_id,
             "redirect_uri": REDIRECT_URI,
             "code_challenge": challenge,
@@ -161,6 +166,7 @@ def test_unregistered_redirect_uri_never_redirects(client, superuser):
         reverse("django_admin_fastmcp:authorize"),
         {
             "response_type": "code",
+            "resource": conf.mcp_resource_url(),
             "client_id": client_id,
             "redirect_uri": "http://127.0.0.1:9/other",
             "code_challenge": challenge,
@@ -178,7 +184,7 @@ def test_full_flow_issues_a_working_token_pair(client, superuser):
     assert data["token_type"] == "Bearer"
     access = verifier.verify_token_sync(data["access_token"])
     assert access is not None
-    assert access.client_id == str(superuser.pk)
+    assert access.client_id == McpClient.objects.get().client_id
     assert access.scopes == ["admin"]
 
 
@@ -212,6 +218,7 @@ def test_refresh_rotates_both_tokens(client, superuser):
         reverse("django_admin_fastmcp:token"),
         {
             "grant_type": "refresh_token",
+            "resource": conf.mcp_resource_url(),
             "refresh_token": data["refresh_token"],
             "client_id": McpClient.objects.get().client_id,
         },
@@ -224,11 +231,13 @@ def test_refresh_rotates_both_tokens(client, superuser):
         reverse("django_admin_fastmcp:token"),
         {
             "grant_type": "refresh_token",
+            "resource": conf.mcp_resource_url(),
             "refresh_token": data["refresh_token"],
             "client_id": McpClient.objects.get().client_id,
         },
     )
     assert replay.status_code == 400
+    assert verifier.verify_token_sync(renewed["access_token"]) is None
 
 
 def test_requested_scopes_are_ignored_and_admin_is_granted(client, db):
@@ -248,7 +257,9 @@ def test_requested_scopes_are_ignored_and_admin_is_granted(client, db):
 
 def issue_grant(user) -> tuple[McpToken, str]:
     mcp_client = McpClient.objects.create(name="t", redirect_uris=[REDIRECT_URI])
-    grant_row, access, _refresh = McpToken.issue(user=user, client=mcp_client, scopes=["admin"])
+    grant_row, access, _refresh = McpToken.issue(
+        user=user, client=mcp_client, scopes=["admin"], resource=conf.mcp_resource_url()
+    )
     return grant_row, access
 
 
@@ -299,5 +310,235 @@ def test_a_grant_never_exceeds_its_users_permissions(client, db, author):
     nobody = User.objects.create_user("nobody", password="pw", is_staff=True)
     with impersonate(nobody):
         assert list_models() == []
-        with pytest.raises(ToolError, match="no add permission"):
+        with pytest.raises(ToolError, match="denied"):
             create_object("demo.Book", {"title": "Nope", "author": str(author.pk)})
+
+
+def test_consent_respects_admin_site_permission(client, superuser, monkeypatch):
+    from django_admin_fastmcp.exposure import admin_site
+
+    client.force_login(superuser)
+    monkeypatch.setattr(admin_site(), "has_permission", lambda request: False)
+    response = client.get(reverse("django_admin_fastmcp:authorize"))
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("resource", ["", "https://other.example/mcp"])
+def test_verifier_rejects_unbound_and_wrong_audience(superuser, resource):
+    grant, access = issue_grant(superuser)
+    grant.resource = resource
+    grant.save(update_fields=["resource"])
+    assert verifier.verify_token_sync(access) is None
+
+
+def test_wrong_pkce_cannot_revoke_a_used_code(client, superuser):
+    client_id = register_client(client)
+    client.force_login(superuser)
+    code_verifier, challenge = make_pkce()
+    code = code_from(authorize(client, client_id, challenge))
+    first = exchange(client, client_id, code, code_verifier)
+    assert first.status_code == 200
+    replay = exchange(client, client_id, code, "x" * 43)
+    assert replay.status_code == 400
+    assert verifier.verify_token_sync(first.json()["access_token"]) is not None
+
+
+@pytest.mark.parametrize("payload", [[], None, 42, "bad"])
+def test_registration_rejects_non_object_json(client, db, payload):
+    response = client.post(
+        reverse("django_admin_fastmcp:register"),
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "uri", ["https://example.com/cb#fragment", "https://user:pass@example.com/cb", "http://[bad/cb"]
+)
+def test_registration_rejects_unsafe_redirect_shapes(client, db, uri):
+    response = client.post(
+        reverse("django_admin_fastmcp:register"),
+        data=json.dumps({"redirect_uris": [uri]}),
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+
+
+def test_authorization_rejects_unknown_resource(client, superuser):
+    client_id = register_client(client)
+    client.force_login(superuser)
+    _, challenge = make_pkce()
+    response = client.post(
+        reverse("django_admin_fastmcp:authorize"),
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": REDIRECT_URI,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "resource": "https://other.example/mcp",
+            "decision": "approve",
+        },
+    )
+    assert "error=invalid_target" in response["Location"]
+    from django_admin_fastmcp.models import McpAuthorizationCode
+
+    assert McpAuthorizationCode.objects.count() == 0
+
+
+def test_code_exchange_rejects_changed_resource(client, superuser):
+    client_id = register_client(client)
+    client.force_login(superuser)
+    code_verifier, challenge = make_pkce()
+    code = code_from(authorize(client, client_id, challenge))
+    response = client.post(
+        reverse("django_admin_fastmcp:token"),
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": REDIRECT_URI,
+            "code_verifier": code_verifier,
+            "resource": "https://other.example/mcp",
+        },
+    )
+    assert response.json()["error"] == "invalid_target"
+    assert McpToken.objects.count() == 0
+
+
+def test_refresh_rejects_changed_resource_without_rotating(client, superuser):
+    data = full_flow(client, superuser)
+    response = client.post(
+        reverse("django_admin_fastmcp:token"),
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": data["refresh_token"],
+            "client_id": McpClient.objects.get().client_id,
+            "resource": "https://other.example/mcp",
+        },
+    )
+    assert response.json()["error"] == "invalid_target"
+    assert verifier.verify_token_sync(data["access_token"]) is not None
+
+
+def test_token_response_cannot_be_cached(client, superuser):
+    client_id = register_client(client)
+    client.force_login(superuser)
+    code_verifier, challenge = make_pkce()
+    code = code_from(authorize(client, client_id, challenge))
+    response = exchange(client, client_id, code, code_verifier)
+    assert response["Cache-Control"] == "no-store"
+    assert response["Pragma"] == "no-cache"
+
+
+def test_unicode_pkce_verifier_is_rejected(client, superuser):
+    client_id = register_client(client)
+    client.force_login(superuser)
+    _, challenge = make_pkce()
+    code = code_from(authorize(client, client_id, challenge))
+    assert exchange(client, client_id, code, "é" * 43).status_code == 400
+
+
+def test_forged_consumed_refresh_does_not_revoke_family(client, superuser):
+    data = full_flow(client, superuser)
+    params = {
+        "grant_type": "refresh_token",
+        "refresh_token": data["refresh_token"],
+        "client_id": McpClient.objects.get().client_id,
+        "resource": conf.mcp_resource_url(),
+    }
+    renewed = client.post(reverse("django_admin_fastmcp:token"), params).json()
+    old_marker, old_prefix, _ = data["refresh_token"].split("_", 2)
+    params["refresh_token"] = f"{old_marker}_{old_prefix}_wrongsecret"
+    assert client.post(reverse("django_admin_fastmcp:token"), params).status_code == 400
+    assert verifier.verify_token_sync(renewed["access_token"]) is not None
+
+
+def test_redirect_preserves_registered_query(client, superuser):
+    from urllib.parse import parse_qs, urlsplit
+
+    uri = "https://client.example/callback?existing=1"
+    registered = client.post(
+        reverse("django_admin_fastmcp:register"),
+        data=json.dumps({"redirect_uris": [uri]}),
+        content_type="application/json",
+    ).json()
+    client.force_login(superuser)
+    _, challenge = make_pkce()
+    response = client.post(
+        reverse("django_admin_fastmcp:authorize"),
+        {
+            "response_type": "code",
+            "client_id": registered["client_id"],
+            "redirect_uri": uri,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "resource": conf.mcp_resource_url(),
+            "decision": "approve",
+            "state": "original",
+        },
+    )
+    params = parse_qs(urlsplit(response["Location"]).query)
+    assert params["existing"] == ["1"]
+    assert params["state"] == ["original"]
+    assert len(params["code"]) == 1
+
+
+def test_code_exchange_refuses_deactivated_user(client, superuser):
+    client_id = register_client(client)
+    client.force_login(superuser)
+    code_verifier, challenge = make_pkce()
+    code = code_from(authorize(client, client_id, challenge))
+    superuser.is_active = False
+    superuser.save(update_fields=["is_active"])
+    assert exchange(client, client_id, code, code_verifier).status_code == 400
+    assert McpToken.objects.count() == 0
+
+
+def test_trailing_slash_configuration_has_one_discovered_oauth_audience(
+    client, superuser, settings
+):
+    from starlette.testclient import TestClient
+
+    from tests.test_discovery import WELL_KNOWN, served_app
+
+    settings.ADMIN_FASTMCP = {
+        **settings.ADMIN_FASTMCP,
+        "MCP_URL": "https://mcp.example.com/hooks/mcp/",
+        "SITE_URL": "https://admin.example.com/",
+    }
+    with TestClient(served_app()) as transport:
+        protected = transport.get(f"{WELL_KNOWN}{conf.mcp_path()}").json()
+    assert protected["resource"] == "https://mcp.example.com/hooks/mcp"
+    metadata = client.get("/.well-known/oauth-authorization-server").json()
+    assert metadata["issuer"] == protected["authorization_servers"][0]
+    assert metadata["authorization_endpoint"] == "https://admin.example.com/admin/mcp/authorize"
+
+    data = full_flow(client, superuser)
+    grant = McpToken.objects.get()
+    assert grant.resource == protected["resource"]
+    assert verifier.verify_token_sync(data["access_token"]) is not None
+    renewed = client.post(
+        reverse("django_admin_fastmcp:token"),
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": data["refresh_token"],
+            "client_id": McpClient.objects.get().client_id,
+            "resource": protected["resource"],
+        },
+    )
+    assert renewed.status_code == 200
+    assert verifier.verify_token_sync(renewed.json()["access_token"]) is not None
+
+    grant.refresh_from_db()
+    grant.resource += "/"
+    grant.save(update_fields=["resource"])
+    assert verifier.verify_token_sync(renewed.json()["access_token"]) is None
+
+
+def test_authorization_server_issuer_matches_configured_origin(client, db, settings):
+    settings.ADMIN_FASTMCP = {**settings.ADMIN_FASTMCP, "SITE_URL": "https://public.example.com"}
+    response = client.get("/.well-known/oauth-authorization-server", HTTP_HOST="testserver")
+    assert response.json()["issuer"] == "https://public.example.com/"
+    assert response.json()["token_endpoint"] == "https://public.example.com/admin/mcp/token"

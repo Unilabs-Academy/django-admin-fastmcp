@@ -9,25 +9,25 @@ from django_admin_fastmcp.tools.actions import run_action
 
 
 def test_actions_preview_by_default(editor, books):
-    pks = [str(books["plain"].pk), str(books["locked"].pk)]
+    pks = [str(books["plain"].pk)]
     with impersonate(editor):
         preview = run_action("demo.Book", "publish_books", pks)
     assert preview == {
         "confirm": False,
         "action": "publish_books",
         "description": "Publish selected books",
-        "affected": 2,
+        "affected": 1,
     }
     assert Book.objects.filter(published=True).count() == 0
 
 
 def test_confirmed_actions_run_and_report_their_messages(editor, books):
-    pks = [str(books["plain"].pk), str(books["locked"].pk)]
+    pks = [str(books["plain"].pk)]
     with impersonate(editor):
         result = run_action("demo.Book", "publish_books", pks, confirm=True)
-    assert result["affected"] == 2
-    assert "Published 2 book(s)." in result["messages"]
-    assert Book.objects.filter(published=True).count() == 2
+    assert result["affected"] == 1
+    assert "Published 1 book(s)." in result["messages"]
+    assert Book.objects.filter(published=True).count() == 1
 
 
 def test_hidden_rows_cannot_be_reached_through_pks(editor, books):

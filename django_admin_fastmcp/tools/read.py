@@ -13,9 +13,9 @@ from django.db.models import Model
 
 from django_admin_fastmcp import conf, exposure
 from django_admin_fastmcp.auth import current_user
-from django_admin_fastmcp.errors import ToolError, not_found
+from django_admin_fastmcp.errors import ToolError, denied, not_found
 from django_admin_fastmcp.serialize import serialize_instance
-from django_admin_fastmcp.tools import resolve, validate_lookup_path
+from django_admin_fastmcp.tools import resolve, validate_lookup_path, validate_relation_filter
 
 
 def _get_visible(queryset, model: type[Model], pk: str):
@@ -50,19 +50,53 @@ def search_objects(
     queryset = model_admin.get_queryset(request)
 
     if q:
+        for field in model_admin.get_search_fields(request):
+            field = field.lstrip("^=@")
+            validate_lookup_path(model_class, field, model_admin, request)
+            if model_class._meta.get_field(field.split("__", 1)[0]).is_relation:
+                raise denied("relation search requires a dedicated scoped tool")
         queryset, may_have_duplicates = model_admin.get_search_results(request, queryset, q)
         if may_have_duplicates:
             queryset = queryset.distinct()
     if filters:
-        for key in filters:
-            validate_lookup_path(model_class, key)
+        from django.contrib.admin import SimpleListFilter
+        from django.http import QueryDict
+
+        query = QueryDict("", mutable=True)
+        for key, value in filters.items():
+            query.setlist(key, [str(v) for v in (value if isinstance(value, list) else [value])])
+        request.GET = query
+        custom_filters = {
+            item.parameter_name: item
+            for item in model_admin.get_list_filter(request)
+            if isinstance(item, type) and issubclass(item, SimpleListFilter)
+        }
+        direct_filters = {}
+        for key, value in filters.items():
+            if key in custom_filters:
+                filter_instance = custom_filters[key](
+                    request, {key: [str(value)]}, model_class, model_admin
+                )
+                choices = {str(choice) for choice, _ in filter_instance.lookup_choices}
+                if str(value) not in choices:
+                    raise ToolError(f"invalid choice for admin filter {key}")
+                filtered = filter_instance.queryset(request, queryset)
+                if filtered is not None:
+                    # A filter may return a fresh queryset; retain the original visibility scope.
+                    queryset = queryset.filter(pk__in=filtered.values("pk"))
+            else:
+                validate_lookup_path(model_class, key, model_admin, request)
+                validate_relation_filter(model_class, key, value, request)
+                direct_filters[key] = value
         try:
-            queryset = queryset.filter(**filters)
+            queryset = queryset.filter(**direct_filters)
         except (FieldError, ValueError, ValidationError) as error:
             raise ToolError(f"invalid filters: {error}") from None
     if order_by:
         for key in order_by:
-            validate_lookup_path(model_class, key)
+            validate_lookup_path(model_class, key, model_admin, request)
+            if model_class._meta.get_field(key.lstrip("-").split("__", 1)[0]).is_relation:
+                raise denied("ordering by relations is not supported")
         try:
             queryset = queryset.order_by(*order_by)
         except FieldError as error:
@@ -70,10 +104,15 @@ def search_objects(
 
     page = max(page, 1)
     page_size = max(1, min(page_size, conf.get("MAX_PAGE_SIZE")))
-    total = queryset.count()
+    # Object-level overrides must apply before pagination and totals.
+    candidates = list(queryset[: conf.get("MAX_SCAN_ROWS") + 1])
+    if len(candidates) > conf.get("MAX_SCAN_ROWS"):
+        raise ToolError("too many candidate rows; narrow the search filters")
+    visible = [obj for obj in candidates if model_admin.has_view_permission(request, obj)]
+    total = len(visible)
     start = (page - 1) * page_size
     rows = [
-        serialize_instance(obj, model_admin, request) for obj in queryset[start : start + page_size]
+        serialize_instance(obj, model_admin, request) for obj in visible[start : start + page_size]
     ]
     return {"rows": rows, "total": total, "page": page, "page_size": page_size}
 
@@ -89,6 +128,8 @@ def get_object(model: str, pk: str) -> dict[str, Any]:
     user = current_user()
     model_class, model_admin, request = resolve(user, model, "view")
     obj = _get_visible(model_admin.get_queryset(request), model_class, pk)
+    if not model_admin.has_view_permission(request, obj):
+        raise denied("no view permission on this object")
     return serialize_instance(obj, model_admin, request)
 
 
@@ -103,8 +144,9 @@ def _serialize_log_entry(entry: LogEntry) -> dict[str, Any]:
             else None
         ),
         "object_id": entry.object_id,
-        "object_repr": entry.object_repr,
-        "change_message": entry.get_change_message(),
+        "object_repr": (
+            f"{entry.content_type.model if entry.content_type else 'object'} #{entry.object_id}"
+        ),
     }
 
 
@@ -119,6 +161,8 @@ def object_history(model: str, pk: str) -> list[dict[str, Any]]:
     user = current_user()
     model_class, model_admin, request = resolve(user, model, "view")
     obj = _get_visible(model_admin.get_queryset(request), model_class, pk)
+    if not model_admin.has_view_permission(request, obj):
+        raise denied("no view permission on this object")
     entries = (
         LogEntry.objects.filter(
             content_type=ContentType.objects.get_for_model(model_class),
@@ -127,7 +171,7 @@ def object_history(model: str, pk: str) -> list[dict[str, Any]]:
         .select_related("user", "content_type")
         .order_by("-action_time")
     )
-    return [_serialize_log_entry(entry) for entry in entries]
+    return [_serialize_log_entry(entry) for entry in entries[: conf.get("MAX_PAGE_SIZE")]]
 
 
 def recent_actions(limit: int = 25) -> list[dict[str, Any]]:
@@ -141,4 +185,21 @@ def recent_actions(limit: int = 25) -> list[dict[str, Any]]:
     entries = LogEntry.objects.select_related("user", "content_type").order_by("-action_time")
     if not user.is_superuser:
         entries = entries.filter(user=user)
-    return [_serialize_log_entry(entry) for entry in entries[:limit]]
+    result = []
+    for entry in entries[: conf.get("MAX_SCAN_ROWS")].iterator():
+        if not entry.content_type or not entry.object_id:
+            continue
+        model = entry.content_type.model_class()
+        if model is None:
+            continue
+        try:
+            _, model_admin, request = resolve(user, exposure.label_of(model), "view")
+            obj = _get_visible(model_admin.get_queryset(request), model, entry.object_id)
+            if not model_admin.has_view_permission(request, obj):
+                continue
+        except ToolError:
+            continue
+        result.append(_serialize_log_entry(entry))
+        if len(result) == limit:
+            break
+    return result

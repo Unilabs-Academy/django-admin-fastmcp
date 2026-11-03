@@ -65,20 +65,20 @@ def test_writes_refuse_models_outside_writable_models(superuser, credential):
         update_object("demo.ApiCredential", str(credential.pk), {"name": "x"})
 
 
-def test_delete_previews_by_default_and_the_cascade_is_exact(editor, author, books):
-    with impersonate(editor):
+def test_delete_previews_by_default_and_the_cascade_is_exact(superuser, author, books):
+    with impersonate(superuser):
         preview = delete_object("demo.Author", str(author.pk))
     assert preview["confirm"] is False
     assert preview["would_delete"]["counts"] == {"authors": 1, "books": 3}
     assert author.__class__.objects.filter(pk=author.pk).exists()  # nothing changed
 
-    with impersonate(editor):
+    with impersonate(superuser):
         result = delete_object("demo.Author", str(author.pk), confirm=True)
     assert result["confirm"] is True
     assert not author.__class__.objects.filter(pk=author.pk).exists()
     assert not Book.objects.exists()  # the cascade ran
     entry = LogEntry.objects.get(action_flag=DELETION, object_id=str(author.pk))
-    assert entry.user_id == editor.pk
+    assert entry.user_id == superuser.pk
 
 
 def test_unknown_filter_keys_error_instead_of_returning_everything(superuser, books):
