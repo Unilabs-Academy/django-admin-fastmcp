@@ -88,7 +88,9 @@ def _response_result(response):
         return {"status": "completed", "redirect": response.url}
     if isinstance(response, StreamingHttpResponse):
         response.close()
-        raise ToolError("streaming action responses are unsupported; use a dedicated tool")
+        raise ToolError(
+            "use native admin workflows for streaming responses; check effects before retrying"
+        )
     if not isinstance(response, HttpResponse):
         return {"status": "completed"}
     if hasattr(response, "render"):
@@ -124,7 +126,9 @@ def run_action(
 ) -> dict[str, Any]:
     """Preview or execute an existing admin action.
 
-    Preview never invokes the action. After confirmation, form-based actions may
+    For uploads, session-dependent actions or streaming downloads, use native
+    admin workflows instead. Preview never invokes the action. After confirmation,
+    form-based actions may
     return requires_input with form controls; send their values in parameters on
     the next call (including the form's apply/post submit value). Selection and
     action name are controlled by this tool, never by parameters. HTTP pages are

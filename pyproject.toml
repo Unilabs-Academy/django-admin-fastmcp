@@ -62,6 +62,7 @@ test = [
     "pytest~=8.4",
     "pytest-django~=4.13",
     "pytest-cov",
+    "django-nested-admin==4.1.6",
 ]
 typing = [
     # zuban reads the standard [tool.mypy] configuration below.

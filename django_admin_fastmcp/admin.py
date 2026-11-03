@@ -7,7 +7,7 @@ OAuth flow. Staff see their own grants, superusers see all.
 
 from django.contrib import admin
 
-from django_admin_fastmcp.models import McpClient, McpToken
+from django_admin_fastmcp.models import McpClient, McpToken, McpWorkflowEvent
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -57,3 +57,17 @@ class McpTokenAdmin(ReadOnlyAdmin):
             grant.revoke()
             count += 1
         self.message_user(request, f"Revoked {count} grant(s).")
+
+
+@admin.register(McpWorkflowEvent)
+class McpWorkflowEventAdmin(ReadOnlyAdmin):
+    list_display = ("created_at", "user", "method", "path", "status", "completed")
+    list_filter = ("method", "completed")
+    exclude = ("workflow",)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request).select_related("user")
+        return queryset if request.user.is_superuser else queryset.filter(user=request.user)

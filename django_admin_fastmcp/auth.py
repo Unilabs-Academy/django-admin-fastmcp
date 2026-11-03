@@ -107,7 +107,11 @@ class DjangoAdminTokenVerifier(TokenVerifier):
             scopes=list(grant.scopes),
             expires_at=int(grant.access_expires_at.timestamp()),
             resource=grant.resource or None,
-            claims={"user_pk": grant.user.pk, "mcp_client": grant.client.name},
+            claims={
+                "user_pk": grant.user.pk,
+                "mcp_client": grant.client.name,
+                "grant_pk": grant.pk,
+            },
         )
 
 
@@ -160,3 +164,22 @@ def client_name() -> str:
     if access_token is None:
         return "unknown"
     return str((access_token.claims or {}).get("mcp_client", "unknown"))
+
+
+def current_grant():
+    """Recheck the grant for stateful operations, including ownership and revocation."""
+    if _impersonated.get() is not None:
+        return None
+    access = _access_token()
+    if access is None:
+        raise denied("no authenticated grant")
+    grant = McpToken.objects.filter(pk=(access.claims or {}).get("grant_pk")).first()
+    if (
+        grant is None
+        or grant.is_revoked
+        or grant.access_expires_at <= timezone.now()
+        or grant.resource != conf.mcp_resource_url()
+        or grant.user_id != current_user().pk
+    ):
+        raise denied("grant is expired or revoked")
+    return grant

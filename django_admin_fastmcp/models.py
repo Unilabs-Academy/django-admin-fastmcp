@@ -216,3 +216,38 @@ class McpRefreshTokenUse(models.Model):
     prefix = models.CharField(max_length=12, unique=True)
     secret_hash = models.CharField(max_length=64)
     consumed_at = models.DateTimeField(auto_now_add=True)
+
+
+class McpWorkflow(models.Model):
+    """Private, expiring browser state bound to one user and OAuth grant."""
+
+    id = models.CharField(primary_key=True, max_length=64, default=make_secret, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    grant = models.ForeignKey(McpToken, null=True, on_delete=models.CASCADE)
+    state = models.JSONField(default=dict)
+    revision = models.PositiveIntegerField(default=0)
+    expires_at = models.DateTimeField(db_index=True)
+
+
+class McpWorkflowFile(models.Model):
+    id = models.CharField(primary_key=True, max_length=64, default=make_secret, editable=False)
+    workflow = models.ForeignKey(McpWorkflow, on_delete=models.CASCADE, related_name="files")
+    name = models.CharField(max_length=200)
+    content_type = models.CharField(max_length=200, default="application/octet-stream")
+    data = models.BinaryField(default=bytes)
+    complete = models.BooleanField(default=False)
+    download = models.BooleanField(default=False)
+
+
+class McpWorkflowEvent(models.Model):
+    """Invocation audit, not a claim that a custom view changed a model."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    grant = models.ForeignKey(McpToken, null=True, on_delete=models.SET_NULL)
+    workflow = models.ForeignKey(McpWorkflow, null=True, on_delete=models.SET_NULL)
+    revision = models.PositiveIntegerField()
+    method = models.CharField(max_length=8)
+    path = models.CharField(max_length=1000)
+    status = models.PositiveIntegerField(null=True)
+    completed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)

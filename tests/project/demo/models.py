@@ -57,3 +57,9 @@ class UnregisteredThing(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class BookNote(models.Model):
+    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name="notes")
+    text = models.CharField(max_length=100)
+    attachment = models.FileField(upload_to="notes", blank=True)

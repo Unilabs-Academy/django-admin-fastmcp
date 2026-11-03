@@ -202,13 +202,66 @@ driven by a language model. The rails:
   cannot be replayed.
 - `delete_object` and `run_action` preview by default and change nothing until
   `confirm=True`.
-- Every mutation records a `LogEntry` attributed to the grant's user, with the client
+- Every direct CRUD/action mutation records a `LogEntry` attributed to the grant's user, with the client
   name in the change message, for example `"Changed status. Via MCP (client: Claude
   Code)."`. A write that cannot record a `LogEntry` rolls back.
 - The package's own models, `sessions.Session`, and `authtoken.Token` are never exposed,
   whatever the settings say.
 - Keep `auth.Permission` and `auth.Group` out of `WRITABLE_MODELS`. An agent that can
   grant permissions can escape the permission model.
+
+## Native admin workflows (Academy fork)
+
+`PERMISSION_MODE="admin"` exposes registered admin models and enables writes
+according to the caller's current Django admin permissions, without separate
+`MODELS` or `WRITABLE_MODELS` allowlists. The default remains `"allowlist"`.
+Explicit exclusions, `mcp_expose=False`, credential/session model exclusions,
+and field redaction still apply. Use a limited staff account when broad user
+administration permissions are not intended.
+
+This mode adds six tools:
+
+- `admin_open_admin_page`: open a registered admin page or follow an observed
+  link, retaining a private session. Preview is the default; native GET views
+  can have side effects, so navigation is annotated as potentially mutating.
+- `admin_inspect_admin_workflow`: inspect forms and paginate their controls.
+- `admin_submit_admin_form`: submit exact HTML field names, including inline
+  and nested-inline formsets. Supply the current revision and `confirm=True`.
+- `admin_upload_admin_file`: upload base64 chunks and attach their file IDs to
+  observed file controls in the same workflow.
+- `admin_download_admin_file`: read bounded chunks of generated downloads,
+  including streaming responses.
+- `admin_close_admin_workflow`: delete private workflow files and session.
+
+Native requests pass through Django's real middleware and admin views, including
+CSRF, form validation, queryset restrictions, object permissions, save hooks,
+inline permissions and admin logging. Session-based intermediate action forms
+retain their state. Standard and nested-admin empty templates are exposed;
+replace `__prefix__` or `-empty-` with the row index and update `TOTAL_FORMS`.
+Unspecified existing controls are preserved; `[]` unchecks a checkbox. Include
+the desired submit button. An HTTP 200 can mean validation failure, so inspect
+the response and verify persisted values.
+
+Each workflow is bound to the user and OAuth grant, expires after 30 minutes,
+and consumes each submitted revision once. Concurrent/replayed submissions are
+rejected. An interrupted execution stays consumed: inspect effects before
+starting another workflow. This is not an exactly-once guarantee for arbitrary
+external side effects. Native requests have a separate `McpWorkflowEvent` audit
+record; custom views retain their own logging semantics and are not falsely
+reported as model edits. Workflow audit records omit form values and files.
+
+Defaults: 10 active workflows per user/grant, 20 files and 20 MiB total file
+content per workflow, 96 KiB decoded chunks, and 4 MiB per HTML response. Expired
+workflow files are removed when another workflow opens; use Django's normal
+`clearsessions` job for expired sessions. Stored workflow state contains private
+session cookies and form snapshots; protect the database as session storage.
+
+JavaScript is not executed. Arbitrary non-admin URLs, unowned custom views,
+external redirects, MFA-required sessions without delegated verification, and
+native forms with model-specific MCP field restrictions are unsupported. Inline
+children follow their parent's native admin form permissions. Native forms are
+not a general-purpose browser, and the existing direct CRUD tools still reject
+inline edits. Refresh the MCP client's tool discovery after changing modes.
 
 ## Observability
 

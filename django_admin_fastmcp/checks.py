@@ -57,6 +57,11 @@ def check_settings(app_configs, **kwargs):
                     )
                 )
 
+    if conf.get("PERMISSION_MODE") not in {"allowlist", "admin"}:
+        errors.append(
+            Error("PERMISSION_MODE must be allowlist or admin", id="django_admin_fastmcp.E009")
+        )
+
     known_tools = set(all_tools())
     for name in conf.get("DISABLED_TOOLS"):
         if name not in known_tools:
@@ -118,7 +123,16 @@ def check_settings(app_configs, **kwargs):
             )
         )
 
-    for name in ("MAX_PAGE_SIZE", "MAX_PKS", "MAX_SCAN_ROWS", "MAX_ACTION_RESPONSE_BYTES"):
+    for name in (
+        "MAX_PAGE_SIZE",
+        "MAX_PKS",
+        "MAX_SCAN_ROWS",
+        "MAX_ACTION_RESPONSE_BYTES",
+        "WORKFLOW_TTL_MINUTES",
+        "MAX_WORKFLOW_BYTES",
+        "MAX_WORKFLOW_FILES",
+        "MAX_WORKFLOW_PAGE_BYTES",
+    ):
         if type(conf.get(name)) is not int or conf.get(name) <= 0:
             errors.append(
                 Error(f"{name} must be a positive integer", id="django_admin_fastmcp.E008")
