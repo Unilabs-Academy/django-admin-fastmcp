@@ -103,7 +103,7 @@ def _check_exposed_fields(model_admin, request, data, obj=None):
 def _check_inline_support(model_admin, request, obj=None):
     if model_admin.get_inline_instances(request, obj):
         raise ToolError(
-            "inline formsets require a dedicated tool; use an admin action or the browser"
+            "inline formsets require native admin workflows (admin permission mode) or the browser"
         )
 
 

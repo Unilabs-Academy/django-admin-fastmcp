@@ -5,7 +5,7 @@ from typing import Any
 from django.db.models import Field
 from django.urls import NoReverseMatch, reverse
 
-from django_admin_fastmcp import exposure
+from django_admin_fastmcp import conf, exposure
 from django_admin_fastmcp.auth import current_user
 from django_admin_fastmcp.errors import ToolError
 from django_admin_fastmcp.request import admin_request
@@ -149,6 +149,7 @@ def describe_model(model: str) -> dict[str, Any]:
             if can_view(inline.model) and inline.has_view_permission(request)
         ],
         "inline_editing_supported": False,
+        "native_admin_workflows_supported": conf.get("PERMISSION_MODE") == "admin",
         "reverse_relations": reverse_relations,
         "actions": actions,
     }

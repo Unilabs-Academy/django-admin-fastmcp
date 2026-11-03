@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_admin_fastmcp",
+    "nested_admin",
     "demo",
 ]
 

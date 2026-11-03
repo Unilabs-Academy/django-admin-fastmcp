@@ -47,19 +47,29 @@ def _matches(label: str, patterns) -> bool:
     return False
 
 
+def is_explicitly_excluded(model: type[Model]) -> bool:
+    """Apply deny rules also to inline-only models without requiring registration."""
+    norm = _normalize(label_of(model))
+    model_admin = admin_site()._registry.get(model)
+    return (
+        norm.split(".", 1)[0] in BUILTIN_DENY_APPS
+        or norm in BUILTIN_DENY_MODELS
+        or _matches(norm, conf.get("EXCLUDE_MODELS"))
+        or getattr(model_admin, "mcp_expose", True) is False
+    )
+
+
 def is_exposed(label: str) -> bool:
     """Fail closed: an unresolvable label is not exposed."""
     try:
         model = apps.get_model(label)
     except (LookupError, ValueError):
         return False
+    if is_explicitly_excluded(model):
+        return False
     norm = _normalize(label_of(model))
-    if norm.split(".", 1)[0] in BUILTIN_DENY_APPS or norm in BUILTIN_DENY_MODELS:
-        return False
-    if _matches(norm, conf.get("EXCLUDE_MODELS")):
-        return False
     allowlist = conf.get("MODELS")
-    if allowlist and not _matches(norm, allowlist):
+    if conf.get("PERMISSION_MODE") != "admin" and allowlist and not _matches(norm, allowlist):
         return False
     model_admin = admin_site()._registry.get(model)
     if model_admin is None:
@@ -77,7 +87,9 @@ def exposed_models() -> list[tuple[type[Model], ModelAdmin]]:
 
 def is_writable(label: str) -> bool:
     """Both gates: the model is exposed and named in WRITABLE_MODELS."""
-    return is_exposed(label) and _matches(label, conf.get("WRITABLE_MODELS"))
+    return is_exposed(label) and (
+        conf.get("PERMISSION_MODE") == "admin" or _matches(label, conf.get("WRITABLE_MODELS"))
+    )
 
 
 def visible_field_names(model_admin: ModelAdmin, all_names: list[str]) -> list[str]:
