@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "ADMIN_SITE": "django.contrib.admin.site",
     "PERMISSION_MODE": "allowlist",
     "WORKFLOW_TTL_MINUTES": 30,
+    "PROPOSAL_TTL_MINUTES": 30,
     "MAX_WORKFLOW_BYTES": 20 * 1024 * 1024,
     "MAX_WORKFLOW_FILES": 20,
     "MAX_WORKFLOW_PAGE_BYTES": 4 * 1024 * 1024,

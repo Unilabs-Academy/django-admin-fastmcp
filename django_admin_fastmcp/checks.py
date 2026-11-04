@@ -129,6 +129,7 @@ def check_settings(app_configs, **kwargs):
         "MAX_SCAN_ROWS",
         "MAX_ACTION_RESPONSE_BYTES",
         "WORKFLOW_TTL_MINUTES",
+        "PROPOSAL_TTL_MINUTES",
         "MAX_WORKFLOW_BYTES",
         "MAX_WORKFLOW_FILES",
         "MAX_WORKFLOW_PAGE_BYTES",

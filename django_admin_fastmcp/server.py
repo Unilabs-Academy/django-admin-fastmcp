@@ -1,6 +1,6 @@
 """build_server() -> FastMCP (SPEC.md sections 4 and 12).
 
-Eleven generic tools, mounted under the namespace "admin", so wire names are
+Generic tools, mounted under the namespace "admin", so wire names are
 "admin_list_models" and so on. The tool list is static and does not vary per
 user. Sync `def` tools: FastMCP runs them in a worker thread, where Django's
 sync ORM is legal (SPEC.md section 6).
@@ -19,7 +19,15 @@ NAMESPACE = "admin"
 
 def all_tools() -> dict[str, Callable]:
     """The tool catalogue, keyed by the names DISABLED_TOOLS uses."""
-    from django_admin_fastmcp.tools import actions, introspect, lookup, read, workflows, write
+    from django_admin_fastmcp.tools import (
+        actions,
+        introspect,
+        lookup,
+        proposals,
+        read,
+        workflows,
+        write,
+    )
 
     tools = {
         "list_models": introspect.list_models,
@@ -33,6 +41,10 @@ def all_tools() -> dict[str, Callable]:
         "delete_object": write.delete_object,
         "run_action": actions.run_action,
         "autocomplete": lookup.autocomplete,
+        "prepare_changes": proposals.prepare_changes,
+        "inspect_change_proposal": proposals.inspect_change_proposal,
+        "apply_change_proposal": proposals.apply_change_proposal,
+        "discard_change_proposal": proposals.discard_change_proposal,
     }
     if conf.get("PERMISSION_MODE") == "admin":
         tools.update(
@@ -64,6 +76,10 @@ def build_server(*, with_auth: bool = True) -> FastMCP:
             "The Django admin of this project, as tools. Start with "
             "admin_list_models to see what you may touch, then "
             "admin_describe_model before reading or writing a model. "
+            "For ordinary edits, prefer admin_prepare_changes to produce a saved "
+            "before/after proposal. Present its records and limitations for review, then "
+            "apply that proposal ID with admin_apply_change_proposal when authorized. "
+            "Do not imply that a proposal proves human approval. "
             "Destructive tools preview first: call them with confirm=false, "
             "read the answer, then confirm. In admin permission mode, use "
             "admin_open_admin_page and admin_submit_admin_form for inlines, "
@@ -76,9 +92,21 @@ def build_server(*, with_auth: bool = True) -> FastMCP:
     from django_admin_fastmcp.tracing import instrument
 
     disabled = set(conf.get("DISABLED_TOOLS"))
+    if "update_object" in disabled:
+        disabled.update(
+            {
+                "prepare_changes",
+                "inspect_change_proposal",
+                "apply_change_proposal",
+                "discard_change_proposal",
+            }
+        )
     for name, fn in all_tools().items():
         if name not in disabled:
             read_only = name not in {
+                "prepare_changes",
+                "apply_change_proposal",
+                "discard_change_proposal",
                 "create_object",
                 "update_object",
                 "delete_object",
@@ -93,7 +121,8 @@ def build_server(*, with_auth: bool = True) -> FastMCP:
                 name=f"{NAMESPACE}_{name}",
                 annotations={
                     "readOnlyHint": read_only,
-                    "destructiveHint": not read_only,
+                    "destructiveHint": not read_only
+                    and name not in {"prepare_changes", "discard_change_proposal"},
                     "idempotentHint": read_only,
                     "openWorldHint": not read_only,
                 },

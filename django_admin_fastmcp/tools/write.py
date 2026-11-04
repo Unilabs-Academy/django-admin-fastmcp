@@ -141,7 +141,9 @@ def create_object(model: str, data: dict[str, Any]) -> dict[str, Any]:
 def update_object(model: str, pk: str, data: dict[str, Any]) -> dict[str, Any]:
     """Partially update one object, as the admin change form would.
 
-    Only the submitted fields change. Fields that are read-only for you are
+    For a before/after review, prefer prepare_changes and apply_change_proposal.
+    This legacy tool writes immediately. Only the submitted fields change.
+    Fields that are read-only for you are
     ignored, not written. Values follow the same shape as create_object.
     Refuses when you lack change permission on the model or on this exact
     object, when the object is hidden from you, when the model is not

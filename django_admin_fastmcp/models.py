@@ -251,3 +251,15 @@ class McpWorkflowEvent(models.Model):
     status = models.PositiveIntegerField(null=True)
     completed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class McpChangeProposal(models.Model):
+    """Expiring edit plans; status records execution, not human approval."""
+
+    id = models.CharField(primary_key=True, max_length=64, default=make_secret, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    grant = models.ForeignKey(McpToken, null=True, on_delete=models.CASCADE)
+    items = models.JSONField(default=list)
+    status = models.CharField(max_length=16, default="pending")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
