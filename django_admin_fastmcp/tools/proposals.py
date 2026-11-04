@@ -100,7 +100,9 @@ def _prepare(user, item, *, lock=False):
     changes = {
         name: {"before": value, "after": after["fields"].get(name)}
         for name, value in before["fields"].items()
-        if value != after["fields"].get(name) and not exposure.is_redacted(name)
+        if name in after["fields"]
+        and value != after["fields"][name]
+        and not exposure.is_redacted(name)
     }
     for field in obj._meta.concrete_fields:
         old, new = original[field.name], getattr(form.instance, field.attname)

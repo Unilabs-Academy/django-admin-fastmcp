@@ -254,3 +254,17 @@ def test_preview_rolls_back_custom_validation_writes(editor, books, monkeypatch)
         assert plan["status"] == "pending"
         assert not Author.objects.filter(name="Validation side effect").exists()
         assert Book.objects.get(pk=books["plain"].pk).title == "Plain"
+
+
+def test_dynamic_field_visibility_does_not_invent_cleared_values(editor, books, monkeypatch):
+    def fields(request, obj=None):
+        return ["published"] if obj and obj.published else ["title", "published"]
+
+    monkeypatch.setattr(admin.site._registry[Book], "get_fields", fields)
+    with impersonate(editor):
+        plan = prepare_changes([change(books["plain"], published=True)])
+        assert plan["records"][0]["changes"] == {"published": {"before": False, "after": True}}
+        apply_change_proposal(plan["proposal_id"])
+    updated = Book.objects.get(pk=books["plain"].pk)
+    assert updated.published
+    assert updated.title == "Plain"
