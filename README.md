@@ -210,6 +210,48 @@ driven by a language model. The rails:
 - Keep `auth.Permission` and `auth.Group` out of `WRITABLE_MODELS`. An agent that can
   grant permissions can escape the permission model.
 
+## Saved change proposals (Academy fork)
+
+For ordinary edits, prefer `admin_prepare_changes` over immediate `admin_update_object`.
+Pass a list such as:
+
+```json
+[{"model": "core.Section", "pk": "123", "data": {"title_en_gb": "Revised title"}}]
+```
+
+The result contains an expiring `proposal_id` and per-record field changes with
+`before` and `after` values. These are validated admin-form values, not a prediction
+of save hooks, signals or external effects. Preparation does not invoke save hooks;
+database writes from custom validation are rolled back. Custom validation must
+still avoid irreversible external effects. After reviewing the proposal, call
+`admin_apply_change_proposal` with only its ID. `admin_inspect_change_proposal`
+reads its status; `admin_discard_change_proposal` discards a pending plan.
+
+The server rechecks current permissions and the saved row fingerprints, locks all
+selected rows in a stable order, and saves the batch and actor audit entries in one
+default-database transaction. Changed records or changed validated previews require
+a new proposal. An attempt is consumed before execution: failed/interrupted attempts
+cannot be replayed. External effects are not covered by database rollback; inspect
+them before making another attempt. Applied results include persisted field values.
+
+This is advisory review, **not human-approval enforcement**. There is no approval
+attestation or required elicitation. Existing immediate writes and native workflows
+remain available. Plugin instructions determine how to present previews and when
+to ask the user. Disabling `update_object` also hides/disables this proposal path.
+
+Proposals support concrete scalar and foreign-key edits using the same admin form
+and save hooks as direct updates. Inline, file, many-to-many, form-only inputs,
+creates, deletes and arbitrary actions keep their existing tools/workflows; their
+side effects cannot be represented as generic update diffs. Readonly and hidden
+changes are rejected instead of silently disappearing from a proposal.
+
+Plans belong to the OAuth user/grant, expire after `PROPOSAL_TTL_MINUTES` (30 by
+default), and are never exposed as admin models through MCP. Defaults limit pending
+plans to 10 per user/grant, batches to min(MAX_PKS, 100), input JSON to 128 KiB and
+stored previews to 512 KiB. Expired plans are purged when preparing another plan.
+The private proposal table stores input and preview values; it contains no approval
+record. Normal `LogEntry` records link applied edits to their proposal ID.
+
 ## Native admin workflows (Academy fork)
 
 `PERMISSION_MODE="admin"` exposes registered admin models and enables writes
