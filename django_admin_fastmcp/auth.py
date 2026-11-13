@@ -89,7 +89,7 @@ class DjangoAdminTokenVerifier(TokenVerifier):
         now = timezone.now()
         if grant.is_revoked or grant.access_expires_at < now:
             return None
-        if not (grant.user.is_active and grant.user.is_staff):
+        if not conf.user_is_allowed(grant.user):
             return None
         expected_resource = conf.mcp_resource_url()
         if grant.resource != expected_resource:
@@ -145,14 +145,16 @@ def current_user():
     """
     override = _impersonated.get()
     if override is not None:
+        if not conf.user_is_allowed(override):
+            raise denied("user is not allowed to use MCP")
         return override
     access_token = _access_token()
     if access_token is None:
         raise denied("no authenticated user on this call")
     claims = access_token.claims or {}
     user = get_user_model().objects.filter(pk=claims.get("user_pk")).first()
-    if user is None or not (user.is_active and user.is_staff):
-        raise denied("not a staff user")
+    if user is None or not conf.user_is_allowed(user):
+        raise denied("user is not allowed to use MCP")
     return user
 
 

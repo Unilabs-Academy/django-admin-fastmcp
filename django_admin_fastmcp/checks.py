@@ -62,6 +62,18 @@ def check_settings(app_configs, **kwargs):
             Error("PERMISSION_MODE must be allowlist or admin", id="django_admin_fastmcp.E009")
         )
 
+    allowed_emails = conf.get("ALLOWED_EMAILS")
+    if allowed_emails is not None and (
+        not isinstance(allowed_emails, (list, tuple))
+        or any(not isinstance(email, str) or not email.strip() for email in allowed_emails)
+    ):
+        errors.append(
+            Error(
+                "ALLOWED_EMAILS must be None or a list/tuple of nonempty email strings",
+                id="django_admin_fastmcp.E010",
+            )
+        )
+
     known_tools = set(all_tools())
     for name in conf.get("DISABLED_TOOLS"):
         if name not in known_tools:
