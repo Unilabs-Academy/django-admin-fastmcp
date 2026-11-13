@@ -544,7 +544,9 @@ def test_authorization_server_issuer_matches_configured_origin(client, db, setti
     assert response.json()["token_endpoint"] == "https://public.example.com/admin/mcp/token"
 
 
-@pytest.mark.parametrize("allowed", [[], ["other@example.com"], ["*@example.com"], "user@example.com"])
+@pytest.mark.parametrize(
+    "allowed", [[], ["other@example.com"], ["*@example.com"], "user@example.com"]
+)
 def test_email_allowlist_denies_consent_and_existing_access(client, superuser, settings, allowed):
     superuser.email = "user@example.com"
     superuser.save(update_fields=["email"])
