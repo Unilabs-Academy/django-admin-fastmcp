@@ -86,8 +86,8 @@ def _staff_or_login(request: HttpRequest) -> HttpResponse | None:
     """Return a redirect or denial for the browser, or None when staff."""
     if not request.user.is_authenticated:
         return redirect_to_login(request.get_full_path(), login_url=reverse("admin:login"))
-    if not (request.user.is_active and request.user.is_staff):
-        return HttpResponseForbidden("A staff account is required to authorize MCP clients.")
+    if not conf.user_is_allowed(request.user):
+        return HttpResponseForbidden("This account is not allowed to authorize MCP clients.")
     if not exposure.admin_site().has_permission(request):
         return HttpResponseForbidden("Admin site authorization is required to connect MCP clients.")
     return None
@@ -273,8 +273,8 @@ def _exchange_code(request: HttpRequest) -> JsonResponse:
     if not verifier or not _pkce_matches(code.code_challenge, verifier):
         return _token_error("invalid_grant", "PKCE verification failed")
 
-    if not (code.user.is_active and code.user.is_staff):
-        return _token_error("invalid_grant", "user is no longer staff")
+    if not conf.user_is_allowed(code.user):
+        return _token_error("invalid_grant", "user is no longer allowed to use MCP")
     if (
         not _valid_resource(code.resource)
         or request.POST.get("resource") != code.resource
@@ -328,8 +328,8 @@ def _exchange_refresh(request: HttpRequest) -> JsonResponse:
         return _token_error("invalid_grant", "refresh token reuse revoked the grant")
     if grant.is_revoked or grant.refresh_expires_at < timezone.now():
         return _token_error("invalid_grant", "refresh token expired or revoked")
-    if not (grant.user.is_active and grant.user.is_staff):
-        return _token_error("invalid_grant", "user is no longer staff")
+    if not conf.user_is_allowed(grant.user):
+        return _token_error("invalid_grant", "user is no longer allowed to use MCP")
 
     access_wire, refresh_wire = grant.rotate()
     return _token_response(grant, access_wire, refresh_wire)

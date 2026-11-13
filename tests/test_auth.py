@@ -542,3 +542,69 @@ def test_authorization_server_issuer_matches_configured_origin(client, db, setti
     response = client.get("/.well-known/oauth-authorization-server", HTTP_HOST="testserver")
     assert response.json()["issuer"] == "https://public.example.com/"
     assert response.json()["token_endpoint"] == "https://public.example.com/admin/mcp/token"
+
+
+@pytest.mark.parametrize("allowed", [[], ["other@example.com"], ["*@example.com"], "user@example.com"])
+def test_email_allowlist_denies_consent_and_existing_access(client, superuser, settings, allowed):
+    superuser.email = "user@example.com"
+    superuser.save(update_fields=["email"])
+    _, access = issue_grant(superuser)
+    settings.ADMIN_FASTMCP = {**settings.ADMIN_FASTMCP, "ALLOWED_EMAILS": allowed}
+    client.force_login(superuser)
+    for method in (client.get, client.post):
+        assert method(reverse("django_admin_fastmcp:authorize")).status_code == 403
+    assert verifier.verify_token_sync(access) is None
+
+
+def test_email_allowlist_normalizes_and_rechecks_refresh_and_tool_user(
+    client, superuser, settings, monkeypatch
+):
+    from django_admin_fastmcp import auth
+
+    superuser.email = "User@Example.com"
+    superuser.save(update_fields=["email"])
+    settings.ADMIN_FASTMCP = {
+        **settings.ADMIN_FASTMCP, "ALLOWED_EMAILS": ["  USER@example.com  "]
+    }
+    data = full_flow(client, superuser)
+    access = verifier.verify_token_sync(data["access_token"])
+    assert access is not None
+    monkeypatch.setattr(auth, "_access_token", lambda: access)
+    assert auth.current_user().pk == superuser.pk
+    settings.ADMIN_FASTMCP = {**settings.ADMIN_FASTMCP, "ALLOWED_EMAILS": []}
+    assert verifier.verify_token_sync(data["access_token"]) is None
+    with pytest.raises(ToolError, match="denied"):
+        auth.current_user()
+    response = client.post(reverse("django_admin_fastmcp:token"), {
+        "grant_type": "refresh_token",
+        "refresh_token": data["refresh_token"],
+        "client_id": McpClient.objects.get().client_id,
+        "resource": conf.mcp_resource_url(),
+    })
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+
+
+def test_email_allowlist_rechecked_between_consent_and_code_exchange(client, superuser, settings):
+    superuser.email = "user@example.com"
+    superuser.save(update_fields=["email"])
+    settings.ADMIN_FASTMCP = {
+        **settings.ADMIN_FASTMCP, "ALLOWED_EMAILS": ["user@example.com"]
+    }
+    client_id = register_client(client)
+    client.force_login(superuser)
+    code_verifier, challenge = make_pkce()
+    code = code_from(authorize(client, client_id, challenge))
+    superuser.email = "removed@example.com"
+    superuser.save(update_fields=["email"])
+    assert exchange(client, client_id, code, code_verifier).status_code == 400
+    assert McpToken.objects.count() == 0
+
+
+def test_email_allowlist_does_not_grant_staff_access(client, db, settings):
+    user = User.objects.create_user("allowed-nonstaff", email="user@example.com")
+    settings.ADMIN_FASTMCP = {
+        **settings.ADMIN_FASTMCP, "ALLOWED_EMAILS": ["user@example.com"]
+    }
+    client.force_login(user)
+    assert client.get(reverse("django_admin_fastmcp:authorize")).status_code == 403

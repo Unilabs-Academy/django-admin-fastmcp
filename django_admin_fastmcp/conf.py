@@ -14,6 +14,7 @@ from pydantic import AnyHttpUrl
 
 DEFAULTS: dict[str, Any] = {
     "SERVER_NAME": "django-admin",
+    "ALLOWED_EMAILS": None,
     "ADMIN_SITE": "django.contrib.admin.site",
     "PERMISSION_MODE": "allowlist",
     "WORKFLOW_TTL_MINUTES": 30,
@@ -88,3 +89,18 @@ def mcp_resource_url() -> str:
 def oauth_issuer() -> str:
     """Use the same URL normalization as FastMCP's authorization-server metadata."""
     return str(AnyHttpUrl(get("SITE_URL")))
+
+
+def user_is_allowed(user) -> bool:
+    """Require active staff status and, when configured, an exact allowed email."""
+    if not (user.is_active and user.is_staff):
+        return False
+    allowed = get("ALLOWED_EMAILS")
+    if allowed is None:
+        return True
+    if not isinstance(allowed, (list, tuple)) or any(
+        not isinstance(email, str) or not email.strip() for email in allowed
+    ):
+        return False
+    email = (getattr(user, "email", "") or "").strip().casefold()
+    return bool(email) and email in {value.strip().casefold() for value in allowed}
